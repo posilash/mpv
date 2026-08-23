@@ -46,9 +46,15 @@ void gpu_next_renderer_preinit(struct priv *p, struct mpv_global *global,
 // Second half: binds the renderer to a GPU. `ra_ctx` and `hwdec_devs` may be
 // NULL, in which case hardware decoding interop is not set up. Returns false on
 // failure, after which gpu_next_renderer_uninit() is still safe to call.
+//
+// `load_all_hwdecs` must be true unless the caller has registered a lazy loader
+// on `hwdec_devs` via hwdec_devices_set_loader(). vo_gpu_next does, and so
+// loads interops on demand; the libmpv render API has no such hook, so without
+// this everything silently falls back to software decoding.
 bool gpu_next_renderer_init_gpu(struct priv *p, pl_log pllog, pl_gpu gpu,
                                 struct ra_ctx *ra_ctx,
-                                struct mp_hwdec_devices *hwdec_devs);
+                                struct mp_hwdec_devices *hwdec_devs,
+                                bool load_all_hwdecs);
 
 // Tear down everything created by the two init halves. Does not free `p`, and
 // does not destroy `hwdec_devs`, which the caller owns.

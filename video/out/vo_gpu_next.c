@@ -2557,7 +2557,8 @@ void gpu_next_renderer_preinit(struct priv *p, struct mpv_global *global,
 
 bool gpu_next_renderer_init_gpu(struct priv *p, pl_log pllog, pl_gpu gpu,
                                 struct ra_ctx *ra_ctx,
-                                struct mp_hwdec_devices *hwdec_devs)
+                                struct mp_hwdec_devices *hwdec_devs,
+                                bool load_all_hwdecs)
 {
     struct gl_video_opts *gl_opts = p->opts_cache->opts;
 
@@ -2570,7 +2571,8 @@ bool gpu_next_renderer_init_gpu(struct priv *p, pl_log pllog, pl_gpu gpu,
         .ra_ctx = ra_ctx,
     };
     if (hwdec_devs)
-        ra_hwdec_ctx_init(&p->hwdec_ctx, hwdec_devs, gl_opts->hwdec_interop, false);
+        ra_hwdec_ctx_init(&p->hwdec_ctx, hwdec_devs, gl_opts->hwdec_interop,
+                          load_all_hwdecs);
     mp_mutex_init(&p->dr_lock);
 
     if (gl_opts->shader_cache)
@@ -2680,8 +2682,9 @@ static int preinit(struct vo *vo)
     vo->hwdec_devs = hwdec_devices_create();
     hwdec_devices_set_loader(vo->hwdec_devs, load_hwdec_api, vo);
 
+    // false: load_hwdec_api() above loads interops lazily, on demand.
     if (!gpu_next_renderer_init_gpu(p, p->context->pllog, p->context->gpu,
-                                    p->context->ra_ctx, vo->hwdec_devs))
+                                    p->context->ra_ctx, vo->hwdec_devs, false))
         goto err_out;
 
     gpu_next_configure_queue(p, vo);

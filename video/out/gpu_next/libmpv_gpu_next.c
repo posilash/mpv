@@ -102,9 +102,11 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
                               "libmpv/gpu-next");
 
     ctx->hwdec_devs = hwdec_devices_create();
+    // true: there is no lazy hwdec loader on this path, so interops have to be
+    // loaded up front or hardware decoding never becomes available.
     if (!gpu_next_renderer_init_gpu(p->renderer, p->context->pllog,
                                     p->context->gpu, p->context->ra_ctx,
-                                    ctx->hwdec_devs))
+                                    ctx->hwdec_devs, true))
         return MPV_ERROR_UNSUPPORTED;
 
     ctx->driver_caps = VO_CAP_ROTATE90 | VO_CAP_VFLIP;

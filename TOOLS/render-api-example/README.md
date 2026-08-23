@@ -34,3 +34,22 @@ Environment:
 - `TEST_OPT` / `TEST_OPT_VAL` set one arbitrary mpv option, which is handy for
   checking that renderer-specific options take effect, e.g.
   `TEST_OPT=tone-mapping TEST_OPT_VAL=reinhard`.
+
+## Vulkan
+
+`render_test_vk.c` is the same test for `MPV_RENDER_API_TYPE_VULKAN`. It creates
+its own instance and device, hands them to mpv, renders into a VkImage it owns
+and copies that image back to check the result.
+
+    gcc -O1 -g -o render_test_vk render_test_vk.c \
+        -I../../include -L../../build -lmpv -lvulkan \
+        -Wl,-rpath,$(realpath ../../build)
+
+    ./render_test_vk <file> [frames]
+
+Note what the device needs, because getting it wrong fails at
+`mpv_render_context_create()` rather than at render time: the features in
+libplacebo's `pl_vulkan_required_features` must be enabled (`hostQueryReset`
+among them), and `mpv_vulkan_fbo.signal_semaphore` must be set so the
+application can tell when rendering has finished. mpv logs which feature is
+missing when the import fails.

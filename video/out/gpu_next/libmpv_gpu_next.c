@@ -34,6 +34,9 @@ static const struct libmpv_gpu_next_context_fns *context_backends[] = {
 #if HAVE_GL
     &libmpv_gpu_next_context_gl,
 #endif
+#if HAVE_VULKAN
+    &libmpv_gpu_next_context_vk,
+#endif
     NULL
 };
 
@@ -181,6 +184,8 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
     gpu_next_renderer_render(p->renderer, frame, &target,
                              (struct pl_color_space){0});
 
+    if (p->context->fns->finish_target)
+        p->context->fns->finish_target(p->context, params);
     p->context->fns->done_frame(p->context, frame->display_synced);
     return 0;
 }

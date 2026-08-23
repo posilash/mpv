@@ -422,6 +422,18 @@ typedef enum mpv_render_param_type {
      * See MPV_RENDER_PARAM_SW_STRIDE for alignment requirements.
      */
     MPV_RENDER_PARAM_SW_POINTER = 20,
+    /**
+     * MPV_RENDER_API_TYPE_VULKAN only: the application's Vulkan device.
+     * Valid for mpv_render_context_create().
+     * Type: mpv_vulkan_init_params* (see render_vk.h)
+     */
+    MPV_RENDER_PARAM_VULKAN_INIT_PARAMS = 21,
+    /**
+     * MPV_RENDER_API_TYPE_VULKAN only: the VkImage to render into.
+     * Valid for mpv_render_context_render().
+     * Type: mpv_vulkan_fbo* (see render_vk.h)
+     */
+    MPV_RENDER_PARAM_VULKAN_FBO = 22,
 } mpv_render_param_type;
 
 /**
@@ -474,6 +486,12 @@ typedef struct mpv_render_param {
  * MPV_RENDER_PARAM_OPENGL_FBO on render. See render_gl.h.
  */
 #define MPV_RENDER_API_TYPE_OPENGL_NEXT "opengl-next"
+
+/**
+ * Vulkan, rendered with libplacebo into a VkImage the application owns. mpv
+ * imports the application's device rather than creating one. See render_vk.h.
+ */
+#define MPV_RENDER_API_TYPE_VULKAN "vulkan"
 // See section "Software renderer"
 #define MPV_RENDER_API_TYPE_SW "sw"
 

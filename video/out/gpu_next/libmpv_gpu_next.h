@@ -57,6 +57,13 @@ struct libmpv_gpu_next_context_fns {
     int (*wrap_fbo)(struct libmpv_gpu_next_context *ctx,
                     mpv_render_param *params, struct pl_frame *out);
 
+    // Optional. Called after rendering has been recorded but before
+    // done_frame(), with the same parameters wrap_fbo() got. APIs where the
+    // client must be handed the target back in a defined state (Vulkan image
+    // layouts) do that here; OpenGL leaves this NULL.
+    void (*finish_target)(struct libmpv_gpu_next_context *ctx,
+                          mpv_render_param *params);
+
     // Called after rendering has been submitted for one frame.
     void (*done_frame)(struct libmpv_gpu_next_context *ctx, bool display_synced);
 
@@ -65,3 +72,4 @@ struct libmpv_gpu_next_context_fns {
 };
 
 extern const struct libmpv_gpu_next_context_fns libmpv_gpu_next_context_gl;
+extern const struct libmpv_gpu_next_context_fns libmpv_gpu_next_context_vk;

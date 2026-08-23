@@ -1338,7 +1338,8 @@ features += {'vulkan': vulkan.found() and (vulkan.type_name() == 'internal' or
                                             dependencies: vulkan))}
 if features['vulkan']
     dependencies += vulkan
-    sources += files('video/out/hwdec/hwdec_vulkan.c',
+    sources += files('video/out/gpu_next/libmpv_vk_pl.c',
+                     'video/out/hwdec/hwdec_vulkan.c',
                      'video/out/vulkan/context.c',
                      'video/out/vulkan/utils.c',
                      'video/filter/vf_gpu_vulkan.c')

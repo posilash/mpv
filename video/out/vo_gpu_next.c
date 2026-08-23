@@ -869,9 +869,13 @@ static float get_ref_luma(struct priv *p)
     // Use auto mode only on libplacebo >= 371, to avoid luminance mismatches,
     // on SDR->SDR in some corner cases. User override is still respected, to
     // preserve previous behavior.
-    struct ra_swapchain *sw = p->ra_ctx->swapchain;
-    if (sw->fns->target_ref_luma)
-        return sw->fns->target_ref_luma(sw);
+    // No ra_ctx when driven through the Vulkan render API: the client owns
+    // presentation, so there is no swapchain to ask.
+    if (p->ra_ctx) {
+        struct ra_swapchain *sw = p->ra_ctx->swapchain;
+        if (sw->fns->target_ref_luma)
+            return sw->fns->target_ref_luma(sw);
+    }
 #endif
 
     return 0;
@@ -997,7 +1001,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     } else { // swdec
         p->hwdec_perf.count = 0;
 
-        if (!p->sw_upload_timer)
+        if (!p->sw_upload_timer && p->ra_ctx)
             p->sw_upload_timer = timer_pool_create(p->ra_ctx->ra);
 
         stats_time_start(p->stats, "swdec-upload");
@@ -1202,7 +1206,7 @@ static void apply_target_options(struct priv *p, struct pl_frame *target,
     if (opts->target_gamut)
         mp_parse_raw_primaries(mp_null_log, opts->target_gamut, &target->color.hdr.prim);
     int dither_depth = opts->dither_depth;
-    if (dither_depth == 0) {
+    if (dither_depth == 0 && p->ra_ctx) {
         struct ra_swapchain *sw = p->ra_ctx->swapchain;
         dither_depth = sw->fns->color_depth ? sw->fns->color_depth(sw) : 0;
     }
@@ -2485,7 +2489,7 @@ void gpu_next_renderer_uninit(struct priv *p, struct mp_hwdec_devices *hwdec_dev
 
     timer_pool_destroy(p->sw_upload_timer);
 
-    if (hwdec_devs) {
+    if (hwdec_devs && p->hwdec_ctx.ra_ctx) {
         ra_hwdec_mapper_free(&p->hwdec_mapper);
         timer_pool_destroy(p->hwdec_timer);
         ra_hwdec_mapper_free(&p->el_hwdec_mapper);
@@ -2570,7 +2574,10 @@ bool gpu_next_renderer_init_gpu(struct priv *p, pl_log pllog, pl_gpu gpu,
         .global = p->global,
         .ra_ctx = ra_ctx,
     };
-    if (hwdec_devs)
+    // Both are required: ra_hwdec_ctx_init() asserts on a NULL ra_ctx, and
+    // backends that cannot provide one (the Vulkan render API imports a device
+    // without an ra) simply go without hardware decoding interop.
+    if (hwdec_devs && ra_ctx)
         ra_hwdec_ctx_init(&p->hwdec_ctx, hwdec_devs, gl_opts->hwdec_interop,
                           load_all_hwdecs);
     mp_mutex_init(&p->dr_lock);

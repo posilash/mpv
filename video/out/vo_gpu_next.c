@@ -946,8 +946,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     struct mp_image *mpi = src->frame_data;
     struct mp_image_params par = mpi->params;
     struct frame_priv *fp = mpi->priv;
-    struct vo *vo = fp->p->vo;
-    struct priv *p = vo->priv;
+    struct priv *p = fp->p;
 
     fp->hwdec = ra_hwdec_get(&p->hwdec_ctx, mpi->imgfmt);
     if (fp->hwdec) {
@@ -1007,7 +1006,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
         timer_pool_stop(p->sw_upload_timer);
         stats_time_end(p->stats, "swdec-upload");
         if (!ok) {
-            MP_ERR(vo, "Failed uploading frame!\n");
+            MP_ERR(p, "Failed uploading frame!\n");
             talloc_free(mpi);
             return false;
         }
@@ -1047,14 +1046,14 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
             fp->el_frame.release = hwdec_release_el;
             setup_hwdec_plane_mapping(&fp->el_frame, &desc);
         } else if (el_ok) {
-            el_ok = upload_planes_sw(vo, gpu, el, &fp->el_frame, fp->el_tex);
+            el_ok = upload_planes_sw(p, gpu, el, &fp->el_frame, fp->el_tex);
         }
 
         if (el_ok) {
             pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
             frame->enhancement_layer = &fp->el_frame;
         } else {
-            MP_WARN(vo, "Failed setting up enhancement layer; "
+            MP_WARN(p, "Failed setting up enhancement layer; "
                     "rendering base layer only.\n");
         }
     }

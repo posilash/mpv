@@ -265,6 +265,7 @@ sources = files(
     'video/out/placebo/utils.c',
     'video/out/vo_gpu_next.c',
     'video/out/gpu_next/context.c',
+    'video/out/gpu_next/libmpv_gpu_next.c',
 
     ## osdep
     'osdep/io.c',
@@ -1316,6 +1317,7 @@ if features['gl']
                      'video/out/opengl/context.c',
                      'video/out/opengl/formats.c',
                      'video/out/opengl/libmpv_gl.c',
+                     'video/out/gpu_next/libmpv_gl_pl.c',
                      'video/out/opengl/ra_gl.c',
                      'video/out/opengl/utils.c')
 elif not features['gl'] and get_option('gl').enabled()

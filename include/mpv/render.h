@@ -466,6 +466,14 @@ typedef struct mpv_render_param {
  */
 // See render_gl.h
 #define MPV_RENDER_API_TYPE_OPENGL "opengl"
+
+/**
+ * OpenGL, rendered with libplacebo (the vo=gpu-next renderer) instead of the
+ * legacy vo=gpu renderer. Takes exactly the same parameters as
+ * MPV_RENDER_API_TYPE_OPENGL: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS on create,
+ * MPV_RENDER_PARAM_OPENGL_FBO on render. See render_gl.h.
+ */
+#define MPV_RENDER_API_TYPE_OPENGL_NEXT "opengl-next"
 // See section "Software renderer"
 #define MPV_RENDER_API_TYPE_SW "sw"
 

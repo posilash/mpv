@@ -156,6 +156,7 @@ struct priv {
     struct scaler_params scalers[SCALER_COUNT];
     const struct pl_hook **hooks; // storage for `params.hooks`
     enum pl_color_levels output_levels;
+    int req_frames;
 
     struct pl_icc_params icc_params;
     char *icc_path;
@@ -172,7 +173,15 @@ struct priv {
     struct mp_image_params target_params;
 };
 
-static void update_render_options(struct vo *vo);
+static void update_render_options(struct priv *p);
+
+// Apply the queue depth computed by update_render_options() to a VO. Separate
+// because the renderer may be driven without one (libmpv render API).
+static void gpu_next_configure_queue(struct priv *p, struct vo *vo)
+{
+    if (vo)
+        vo_set_queue_params(vo, 0, p->req_frames, 2 * p->req_frames - 1);
+}
 static void update_lut(struct priv *p, struct user_lut *lut);
 
 struct gl_next_opts {
@@ -1116,8 +1125,10 @@ static void update_options(struct vo *vo)
     pl_options pars = p->pars;
     bool changed = m_config_cache_update(p->opts_cache);
     changed = m_config_cache_update(p->next_opts_cache) || changed;
-    if (changed)
-        update_render_options(vo);
+    if (changed) {
+        update_render_options(p);
+        gpu_next_configure_queue(p, vo);
+    }
 
     update_lut(p, &p->next_opts->lut);
     pars->params.lut = p->next_opts->lut.lut;
@@ -2361,18 +2372,17 @@ done:
     talloc_free(ta_ctx);
 }
 
-static void cache_init(struct vo *vo, struct cache *cache, size_t max_size,
+static void cache_init(struct priv *p, struct cache *cache, size_t max_size,
                        const char *dir_opt)
 {
-    struct priv *p = vo->priv;
     const char *name = cache == &p->shader_cache ? "shader" : "icc";
     const size_t limit = cache == &p->shader_cache ? 128 << 20 : 1536 << 20;
 
     char *dir;
     if (dir_opt && dir_opt[0]) {
-        dir = mp_get_user_path(vo, p->global, dir_opt);
+        dir = mp_get_user_path(p, p->global, dir_opt);
     } else {
-        dir = mp_find_user_file(vo, p->global, "cache", "");
+        dir = mp_find_user_file(p, p->global, "cache", "");
     }
     if (!dir || !dir[0])
         return;
@@ -2569,9 +2579,9 @@ static int preinit(struct vo *vo)
     mp_mutex_init(&p->dr_lock);
 
     if (gl_opts->shader_cache)
-        cache_init(vo, &p->shader_cache, 10 << 20, gl_opts->shader_cache_dir);
+        cache_init(p, &p->shader_cache, 10 << 20, gl_opts->shader_cache_dir);
     if (gl_opts->icc_opts->cache)
-        cache_init(vo, &p->icc_cache, 20 << 20, gl_opts->icc_opts->cache_dir);
+        cache_init(p, &p->icc_cache, 20 << 20, gl_opts->icc_opts->cache_dir);
 
     pl_gpu_set_cache(p->gpu, p->shader_cache.cache);
     p->rr = pl_renderer_create(p->pllog, p->gpu);
@@ -2581,7 +2591,8 @@ static int preinit(struct vo *vo)
     p->osd_sync = 1;
 
     p->pars = pl_options_alloc(p->pllog);
-    update_render_options(vo);
+    update_render_options(p);
+    gpu_next_configure_queue(p, vo);
     return 0;
 
 err_out:
@@ -2860,9 +2871,8 @@ static void update_hook_opts(struct priv *p, char **opts, const char *shaderpath
     }
 }
 
-static void update_render_options(struct vo *vo)
+static void update_render_options(struct priv *p)
 {
-    struct priv *p = vo->priv;
     pl_options pars = p->pars;
     const struct gl_video_opts *opts = p->opts_cache->opts;
     pars->params.background_color[0] = opts->background_color.r / 255.0;
@@ -2908,7 +2918,10 @@ static void update_render_options(struct vo *vo)
     }
     req_frames = MPMIN(VO_MAX_REQ_FRAMES, req_frames);
     // pl_queue also retains past frames for the symmetric mixing window,
-    vo_set_queue_params(vo, 0, req_frames, 2 * req_frames - 1);
+    // Recorded rather than applied here: the renderer has no VO of its own when
+    // driven through the libmpv render API. Callers that have one apply it via
+    // gpu_next_configure_queue().
+    p->req_frames = req_frames;
 
     pars->params.deband_params = opts->deband ? &pars->deband_params : NULL;
     pars->deband_params.iterations = opts->deband_opts->iterations;

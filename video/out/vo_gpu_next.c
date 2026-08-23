@@ -50,6 +50,7 @@
 #include "gpu/video_shaders.h"
 #include "sub/osd.h"
 #include "gpu_next/context.h"
+#include "gpu_next/renderer.h"
 
 #if HAVE_GL && defined(PL_HAVE_OPENGL)
 #include <libplacebo/opengl.h>
@@ -285,10 +286,9 @@ static void free_dr_buf(void *opaque, uint8_t *data)
     MP_ASSERT_UNREACHABLE();
 }
 
-static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
-                                  int stride_align, int flags)
+static struct mp_image *get_image_priv(struct priv *p, int imgfmt, int w, int h,
+                                       int stride_align, int flags)
 {
-    struct priv *p = vo->priv;
     pl_gpu gpu = p->gpu;
     if (!gpu->limits.thread_safe || !gpu->limits.max_mapped_size)
         return NULL;
@@ -1860,15 +1860,7 @@ static void resize(struct vo *vo)
         vo->want_redraw = true;
     }
 
-    if (mp_rect_equals(&p->src, &src) &&
-        mp_rect_equals(&p->dst, &dst) &&
-        osd_res_equals(p->osd_res, osd))
-        return;
-
-    p->osd_sync++;
-    p->osd_res = osd;
-    p->src = src;
-    p->dst = dst;
+    gpu_next_renderer_resize(p, &src, &dst, &osd);
 }
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
@@ -2478,10 +2470,8 @@ done:
     pl_cache_destroy(&cache->cache);
 }
 
-static void uninit(struct vo *vo)
+void gpu_next_renderer_uninit(struct priv *p, struct mp_hwdec_devices *hwdec_devs)
 {
-    struct priv *p = vo->priv;
-
     // Drain any in-flight uploads.
     if (p->gpu)
         pl_gpu_finish(p->gpu);
@@ -2496,14 +2486,12 @@ static void uninit(struct vo *vo)
 
     timer_pool_destroy(p->sw_upload_timer);
 
-    if (vo->hwdec_devs) {
+    if (hwdec_devs) {
         ra_hwdec_mapper_free(&p->hwdec_mapper);
         timer_pool_destroy(p->hwdec_timer);
         ra_hwdec_mapper_free(&p->el_hwdec_mapper);
         timer_pool_destroy(p->el_hwdec_timer);
         ra_hwdec_ctx_uninit(&p->hwdec_ctx);
-        hwdec_devices_set_loader(vo->hwdec_devs, NULL, NULL);
-        hwdec_devices_destroy(vo->hwdec_devs);
     }
 
     mp_assert(p->num_dr_buffers == 0);
@@ -2529,6 +2517,19 @@ static void uninit(struct vo *vo)
     p->ra_ctx = NULL;
     p->pllog = NULL;
     p->gpu = NULL;
+}
+
+static void uninit(struct vo *vo)
+{
+    struct priv *p = vo->priv;
+
+    gpu_next_renderer_uninit(p, vo->hwdec_devs);
+
+    if (vo->hwdec_devs) {
+        hwdec_devices_set_loader(vo->hwdec_devs, NULL, NULL);
+        hwdec_devices_destroy(vo->hwdec_devs);
+    }
+
     p->sw = NULL;
     gpu_ctx_destroy(&p->context);
 }
@@ -2538,39 +2539,39 @@ static void load_hwdec_api(void *ctx, struct hwdec_imgfmt_request *params)
     vo_control(ctx, VOCTRL_LOAD_HWDEC_API, params);
 }
 
-static int preinit(struct vo *vo)
+struct priv *gpu_next_renderer_alloc(void *ta_parent)
 {
-    struct priv *p = vo->priv;
-    p->vo = vo;
-    p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
-    p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
-    p->next_opts = p->next_opts_cache->opts;
-    p->video_eq = mp_csp_equalizer_create(p, vo->global);
-    p->global = vo->global;
-    p->log = vo->log;
-    p->stats = stats_ctx_create(p, vo->global, "vo/gpu-next");
+    return talloc_zero(ta_parent, struct priv);
+}
 
+void gpu_next_renderer_preinit(struct priv *p, struct mpv_global *global,
+                               struct mp_log *log, const char *stats_name)
+{
+    p->global = global;
+    p->log = log;
+    p->opts_cache = m_config_cache_alloc(p, global, &gl_video_conf);
+    p->next_opts_cache = m_config_cache_alloc(p, global, &gl_next_conf);
+    p->next_opts = p->next_opts_cache->opts;
+    p->video_eq = mp_csp_equalizer_create(p, global);
+    p->stats = stats_ctx_create(p, global, stats_name);
+}
+
+bool gpu_next_renderer_init_gpu(struct priv *p, pl_log pllog, pl_gpu gpu,
+                                struct ra_ctx *ra_ctx,
+                                struct mp_hwdec_devices *hwdec_devs)
+{
     struct gl_video_opts *gl_opts = p->opts_cache->opts;
-    struct ra_ctx_opts *ctx_opts = mp_get_config_group(vo, vo->global, &ra_ctx_conf);
-    update_ra_ctx_options(vo, ctx_opts);
-    p->context = gpu_ctx_create(vo, ctx_opts);
-    talloc_free(ctx_opts);
-    if (!p->context)
-        goto err_out;
-    // For the time being
-    p->ra_ctx = p->context->ra_ctx;
-    p->pllog = p->context->pllog;
-    p->gpu = p->context->gpu;
-    p->sw = p->context->swapchain;
+
+    p->pllog = pllog;
+    p->gpu = gpu;
+    p->ra_ctx = ra_ctx;
     p->hwdec_ctx = (struct ra_hwdec_ctx) {
         .log = p->log,
         .global = p->global,
-        .ra_ctx = p->ra_ctx,
+        .ra_ctx = ra_ctx,
     };
-
-    vo->hwdec_devs = hwdec_devices_create();
-    hwdec_devices_set_loader(vo->hwdec_devs, load_hwdec_api, vo);
-    ra_hwdec_ctx_init(&p->hwdec_ctx, vo->hwdec_devs, gl_opts->hwdec_interop, false);
+    if (hwdec_devs)
+        ra_hwdec_ctx_init(&p->hwdec_ctx, hwdec_devs, gl_opts->hwdec_interop, false);
     mp_mutex_init(&p->dr_lock);
 
     if (gl_opts->shader_cache)
@@ -2578,15 +2579,112 @@ static int preinit(struct vo *vo)
     if (gl_opts->icc_opts->cache)
         cache_init(p, &p->icc_cache, 20 << 20, gl_opts->icc_opts->cache_dir);
 
-    pl_gpu_set_cache(p->gpu, p->shader_cache.cache);
-    p->rr = pl_renderer_create(p->pllog, p->gpu);
-    p->queue = pl_queue_create(p->gpu);
-    p->osd_fmt[SUBBITMAP_LIBASS] = pl_find_named_fmt(p->gpu, "r8");
-    p->osd_fmt[SUBBITMAP_BGRA] = pl_find_named_fmt(p->gpu, "bgra8");
+    pl_gpu_set_cache(gpu, p->shader_cache.cache);
+    p->rr = pl_renderer_create(pllog, gpu);
+    p->queue = pl_queue_create(gpu);
+    p->osd_fmt[SUBBITMAP_LIBASS] = pl_find_named_fmt(gpu, "r8");
+    p->osd_fmt[SUBBITMAP_BGRA] = pl_find_named_fmt(gpu, "bgra8");
     p->osd_sync = 1;
 
-    p->pars = pl_options_alloc(p->pllog);
+    p->pars = pl_options_alloc(pllog);
     update_render_options(p);
+    return p->rr && p->queue;
+}
+
+void gpu_next_renderer_set_vo(struct priv *p, struct vo *vo)
+{
+    p->vo = vo;
+}
+
+void gpu_next_renderer_configure_queue(struct priv *p, struct vo *vo)
+{
+    gpu_next_configure_queue(p, vo);
+}
+
+bool gpu_next_renderer_check_format(struct priv *p, int imgfmt)
+{
+    if (ra_hwdec_get(&p->hwdec_ctx, imgfmt))
+        return true;
+    return format_supported(p, imgfmt, false) ||
+           format_supported(p, imgfmt, true);
+}
+
+void gpu_next_renderer_resize(struct priv *p, struct mp_rect *src,
+                              struct mp_rect *dst, struct mp_osd_res *osd)
+{
+    if (mp_rect_equals(&p->src, src) && mp_rect_equals(&p->dst, dst) &&
+        osd_res_equals(p->osd_res, *osd))
+        return;
+
+    p->osd_sync++;
+    p->osd_res = *osd;
+    p->src = *src;
+    p->dst = *dst;
+}
+
+void gpu_next_renderer_reset(struct priv *p)
+{
+    // Defer until the first new frame (unique ID) actually arrives
+    p->want_reset = true;
+}
+
+struct mp_image *gpu_next_renderer_get_image(struct priv *p, int imgfmt, int w,
+                                             int h, int stride_align, int flags)
+{
+    return get_image_priv(p, imgfmt, w, h, stride_align, flags);
+}
+
+static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
+                                  int stride_align, int flags)
+{
+    return get_image_priv(vo->priv, imgfmt, w, h, stride_align, flags);
+}
+
+void gpu_next_renderer_perfdata(struct priv *p,
+                                struct voctrl_performance_data *out)
+{
+    copy_frame_info_to_mp(&p->perf_fresh, &out->fresh, &p->hwdec_perf,
+                          &p->sw_upload_perf);
+    copy_frame_info_to_mp(&p->perf_redraw, &out->redraw, NULL, NULL);
+}
+
+bool gpu_next_renderer_render(struct priv *p, struct vo_frame *frame,
+                              struct pl_frame *target,
+                              struct pl_color_space target_csp)
+{
+    struct frame_render_state rs = {0};
+
+    queue_frames(p, frame, &rs);
+    rs.target_csp = target_csp;
+    negotiate_target_csp(p, frame, &rs);
+    // No hint is applied: rs.hint_action is swapchain business, and
+    // rs.external_params stays false, so the negotiated hint is not forced
+    // onto the caller's target.
+    return render_frame_to_target(p, frame, target, &rs);
+}
+
+static int preinit(struct vo *vo)
+{
+    struct priv *p = vo->priv;
+    p->vo = vo;
+
+    gpu_next_renderer_preinit(p, vo->global, vo->log, "vo/gpu-next");
+
+    struct ra_ctx_opts *ctx_opts = mp_get_config_group(vo, vo->global, &ra_ctx_conf);
+    update_ra_ctx_options(vo, ctx_opts);
+    p->context = gpu_ctx_create(vo, ctx_opts);
+    talloc_free(ctx_opts);
+    if (!p->context)
+        goto err_out;
+    p->sw = p->context->swapchain;
+
+    vo->hwdec_devs = hwdec_devices_create();
+    hwdec_devices_set_loader(vo->hwdec_devs, load_hwdec_api, vo);
+
+    if (!gpu_next_renderer_init_gpu(p, p->context->pllog, p->context->gpu,
+                                    p->context->ra_ctx, vo->hwdec_devs))
+        goto err_out;
+
     gpu_next_configure_queue(p, vo);
     return 0;
 

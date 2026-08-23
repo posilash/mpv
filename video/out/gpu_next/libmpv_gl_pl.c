@@ -37,6 +37,13 @@ struct priv {
     // presentation.
     struct ra_ctx *ra_ctx;
     pl_tex target;
+    // Identity of the wrapped framebuffer. pl_tex does not expose the GL
+    // object it wraps, so the cache key must be kept here: a client double- or
+    // triple-buffering its targets passes a different fbo every call at the
+    // same size, and a size-only check would render every frame into
+    // whichever framebuffer happened to be wrapped first.
+    int target_fbo;
+    int target_iformat;
 };
 
 static int init(struct libmpv_gpu_next_context *ctx, mpv_render_param *params)
@@ -120,9 +127,13 @@ static int wrap_fbo(struct libmpv_gpu_next_context *ctx,
 
     // pl_opengl_wrap takes ownership of nothing; the texture object is a thin
     // handle onto the client's framebuffer, so it is recreated whenever the
-    // client's target changes.
+    // client's target changes -- and "changes" includes the framebuffer
+    // object itself, not just its size: multi-buffered clients alternate fbo
+    // ids at a constant size.
     if (p->target && (p->target->params.w != fbo->w ||
-                      p->target->params.h != fbo->h))
+                      p->target->params.h != fbo->h ||
+                      p->target_fbo != fbo->fbo ||
+                      p->target_iformat != fbo->internal_format))
         pl_tex_destroy(ctx->gpu, &p->target);
 
     if (!p->target) {
@@ -136,6 +147,8 @@ static int wrap_fbo(struct libmpv_gpu_next_context *ctx,
             mp_err(ctx->log, "Failed wrapping client framebuffer!\n");
             return MPV_ERROR_UNSUPPORTED;
         }
+        p->target_fbo = fbo->fbo;
+        p->target_iformat = fbo->internal_format;
     }
 
     bool flip = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_FLIP_Y,

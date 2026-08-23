@@ -495,6 +495,16 @@ static void update_overlays(struct priv *p, struct mp_osd_res res,
                             struct osd_state *state, struct pl_frame *frame,
                             struct mp_image *src, int stereo_mode, float ref_luma)
 {
+    // Under the libmpv render API there is legitimately no VO between files
+    // (update_external documents this), yet the client may still request
+    // renders -- a redraw while a stream is opening, for instance. There is
+    // no OSD to ask about in that state, only a crash in osd_render().
+    if (!p->vo) {
+        frame->overlays = NULL;
+        frame->num_overlays = 0;
+        return;
+    }
+
     double pts = src ? src->pts : 0;
     int div[2];
     mp_get_3d_side_by_side(stereo_mode, div);
@@ -1737,23 +1747,26 @@ static bool render_frame_to_target(struct priv *p, struct vo_frame *frame,
     struct pl_frame ref_frame;
     pl_frames_infer_mix(p->rr, &mix, target, &ref_frame);
 
-    mp_mutex_lock(&p->vo->params_mutex);
-    p->target_params = (struct mp_image_params){
-        .imgfmt_name = target->planes[0].texture->params.format
-                        ? target->planes[0].texture->params.format->name : NULL,
-        .w = mp_rect_w(p->dst),
-        .h = mp_rect_h(p->dst),
-        .color = target->color,
-        .repr = target->repr,
-        .rotate = target->rotation,
-    };
-    p->vo->target_params = &p->target_params;
+    // Same no-VO window as in update_overlays: nothing to report back to.
+    if (p->vo) {
+        mp_mutex_lock(&p->vo->params_mutex);
+        p->target_params = (struct mp_image_params){
+            .imgfmt_name = target->planes[0].texture->params.format
+                            ? target->planes[0].texture->params.format->name : NULL,
+            .w = mp_rect_w(p->dst),
+            .h = mp_rect_h(p->dst),
+            .color = target->color,
+            .repr = target->repr,
+            .rotate = target->rotation,
+        };
+        p->vo->target_params = &p->target_params;
 
-    if (p->vo->params) {
-        // Augment metadata with peak detection max_pq_y / avg_pq_y
-        p->vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &p->vo->params->color.hdr);
+        if (p->vo->params) {
+            // Augment metadata with peak detection max_pq_y / avg_pq_y
+            p->vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &p->vo->params->color.hdr);
+        }
+        mp_mutex_unlock(&p->vo->params_mutex);
     }
-    mp_mutex_unlock(&p->vo->params_mutex);
 
     p->is_interpolated = rs->pts_offset != 0 && mix.num_frames > 1;
     valid = true;

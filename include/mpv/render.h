@@ -556,7 +556,10 @@ typedef struct mpv_render_frame_info {
     uint64_t flags;
     /**
      * Absolute time at which the frame is supposed to be displayed. This is in
-     * the same unit and base as the time returned by mpv_get_time_us(). For
+     * the same unit and base as the time returned by mpv_get_time_ns(), i.e.
+     * nanoseconds: it is assigned straight from vo_frame.pts, which is in
+     * mp_time_ns() units. (This field predates the switch to nanosecond
+     * timestamps and was previously documented as mpv_get_time_us() units.) For
      * frames that are redrawn, or if vsync locked video timing is used (see
      * "video-sync" option), then this can be 0. The "video-timing-offset"
      * option determines how much "headroom" the render thread gets (but a high

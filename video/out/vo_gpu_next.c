@@ -106,6 +106,9 @@ struct cache {
 };
 
 struct priv {
+    // The VO this renderer serves, or NULL when driven through the libmpv
+    // render API. Only used for state that genuinely belongs to a VO.
+    struct vo *vo;
     struct mp_log *log;
     struct mpv_global *global;
     struct stats_ctx *stats;
@@ -323,10 +326,9 @@ static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
     return mpi;
 }
 
-static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+static bool upload_overlay_tex(struct priv *p, struct osd_entry *entry,
                                const struct sub_bitmaps *item)
 {
-    struct priv *p = vo->priv;
     if (!entry->tex)
         MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
     bool ok = pl_tex_recreate(p->gpu, &entry->tex, &(struct pl_tex_params) {
@@ -337,7 +339,7 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
         .sampleable = true,
     });
     if (!ok) {
-        MP_ERR(vo, "Failed recreating OSD texture!\n");
+        MP_ERR(p, "Failed recreating OSD texture!\n");
         return false;
     }
     struct pl_tex_transfer_params upload_params = {
@@ -352,7 +354,7 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
         upload_params.priv = mp_image_new_ref(item->packed);
     }
     if (!pl_tex_upload(p->gpu, &upload_params)) {
-        MP_ERR(vo, "Failed uploading OSD texture!\n");
+        MP_ERR(p, "Failed uploading OSD texture!\n");
         talloc_free(upload_params.priv);
         return false;
     }
@@ -488,18 +490,17 @@ static void add_run_overlay(struct priv *p, struct osd_state *state,
     }
 }
 
-static void update_overlays(struct vo *vo, struct mp_osd_res res,
+static void update_overlays(struct priv *p, struct mp_osd_res res,
                             int flags, enum pl_overlay_coords coords,
                             struct osd_state *state, struct pl_frame *frame,
                             struct mp_image *src, int stereo_mode, float ref_luma)
 {
-    struct priv *p = vo->priv;
     double pts = src ? src->pts : 0;
     int div[2];
     mp_get_3d_side_by_side(stereo_mode, div);
     res.w /= div[0];
     res.h /= div[1];
-    struct sub_bitmap_list *subs = osd_render(vo->osd, res, pts, flags, mp_draw_sub_formats);
+    struct sub_bitmap_list *subs = osd_render(p->vo->osd, res, pts, flags, mp_draw_sub_formats);
 
     state->num_overlays = 0;
 
@@ -508,7 +509,7 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
         if (!item->num_parts || !item->packed)
             continue;
         struct osd_entry *entry = &state->entries[item->render_index];
-        if (!upload_overlay_tex(vo, entry, item))
+        if (!upload_overlay_tex(p, entry, item))
             break;
 
         MP_TARRAY_GROW(p, entry->parts, item->num_parts * div[0] * div[1]);
@@ -558,7 +559,7 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
 }
 
 struct frame_priv {
-    struct vo *vo;
+    struct priv *p;
     struct osd_state subs;
     uint64_t osd_sync;
     struct ra_hwdec *hwdec;
@@ -759,7 +760,7 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
 {
     struct mp_image *mpi = frame->user_data;
     struct frame_priv *fp = mpi->priv;
-    struct priv *p = fp->vo->priv;
+    struct priv *p = fp->p;
     if (!hwdec_reconfig(p, &p->hwdec_mapper, &p->hwdec_timer, fp->hwdec,
                         &mpi->params))
         return false;
@@ -792,7 +793,7 @@ static void hwdec_release(pl_gpu gpu, struct pl_frame *frame)
 {
     struct mp_image *mpi = frame->user_data;
     struct frame_priv *fp = mpi->priv;
-    struct priv *p = fp->vo->priv;
+    struct priv *p = fp->p;
     if (!ra_pl_get(p->hwdec_mapper->ra)) {
         for (int n = 0; n < frame->num_planes; n++)
             pl_tex_destroy(p->gpu, &frame->planes[n].texture);
@@ -807,7 +808,7 @@ static bool hwdec_acquire_el(pl_gpu gpu, struct pl_frame *frame)
     struct mp_image *bl_mpi = frame->user_data;
     struct mp_image *el_mpi = bl_mpi->enhancement_layer;
     struct frame_priv *fp = bl_mpi->priv;
-    struct priv *p = fp->vo->priv;
+    struct priv *p = fp->p;
     if (!hwdec_reconfig(p, &p->el_hwdec_mapper, &p->el_hwdec_timer,
                         fp->el_hwdec, &el_mpi->params))
         return false;
@@ -830,7 +831,7 @@ static void hwdec_release_el(pl_gpu gpu, struct pl_frame *frame)
 {
     struct mp_image *bl_mpi = frame->user_data;
     struct frame_priv *fp = bl_mpi->priv;
-    struct priv *p = fp->vo->priv;
+    struct priv *p = fp->p;
     if (!ra_pl_get(p->el_hwdec_mapper->ra)) {
         for (int n = 0; n < frame->num_planes; n++)
             pl_tex_destroy(p->gpu, &frame->planes[n].texture);
@@ -840,9 +841,8 @@ static void hwdec_release_el(pl_gpu gpu, struct pl_frame *frame)
 }
 #endif
 
-static bool format_supported(struct vo *vo, int format, bool use_uint)
+static bool format_supported(struct priv *p, int format, bool use_uint)
 {
-    struct priv *p = vo->priv;
     struct pl_bit_encoding bits;
     struct pl_plane_data data[4] = {0};
     int planes = plane_data_from_imgfmt(data, &bits, format, use_uint);
@@ -888,15 +888,14 @@ static bool use_ref_luma(const struct pl_color_space *csp, const struct pl_color
     return false;
 }
 
-static bool upload_planes_sw(struct vo *vo, pl_gpu gpu, struct mp_image *mpi,
+static bool upload_planes_sw(struct priv *p, pl_gpu gpu, struct mp_image *mpi,
                              struct pl_frame *frame, pl_tex tex[4])
 {
-    struct priv *p = vo->priv;
     struct pl_plane_data data[4] = {0};
 
     // At this point, we know that the format is supported, query_format()
     // makes sure of that. Just check if we should use UINT as a fallback.
-    bool use_uint = !format_supported(vo, mpi->imgfmt, false);
+    bool use_uint = !format_supported(p, mpi->imgfmt, false);
     int planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt,
                                         use_uint);
     if (!planes)
@@ -947,7 +946,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     struct mp_image *mpi = src->frame_data;
     struct mp_image_params par = mpi->params;
     struct frame_priv *fp = mpi->priv;
-    struct vo *vo = fp->vo;
+    struct vo *vo = fp->p->vo;
     struct priv *p = vo->priv;
 
     fp->hwdec = ra_hwdec_get(&p->hwdec_ctx, mpi->imgfmt);
@@ -1004,7 +1003,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
 
         stats_time_start(p->stats, "swdec-upload");
         timer_pool_start(p->sw_upload_timer);
-        bool ok = upload_planes_sw(vo, gpu, mpi, frame, tex);
+        bool ok = upload_planes_sw(fp->p, gpu, mpi, frame, tex);
         timer_pool_stop(p->sw_upload_timer);
         stats_time_end(p->stats, "swdec-upload");
         if (!ok) {
@@ -1082,7 +1081,7 @@ static void unmap_frame(pl_gpu gpu, struct pl_frame *frame,
 {
     struct mp_image *mpi = src->frame_data;
     struct frame_priv *fp = mpi->priv;
-    struct priv *p = fp->vo->priv;
+    struct priv *p = fp->p;
     for (int i = 0; i < MP_ARRAY_SIZE(fp->subs.entries); i++) {
         pl_tex tex = fp->subs.entries[i].tex;
         if (tex)
@@ -1103,8 +1102,7 @@ static void discard_frame(const struct pl_source_frame *src)
 
 static void info_callback(void *priv, const struct pl_render_info *info)
 {
-    struct vo *vo = priv;
-    struct priv *p = vo->priv;
+    struct priv *p = priv;
     if (info->index >= VO_PASS_PERF_MAX)
         return; // silently ignore clipped passes, whatever
 
@@ -1119,15 +1117,14 @@ static void info_callback(void *priv, const struct pl_render_info *info)
     pl_dispatch_info_move(&frame->info[info->index], info->pass);
 }
 
-static void update_options(struct vo *vo)
+static void update_options(struct priv *p)
 {
-    struct priv *p = vo->priv;
     pl_options pars = p->pars;
     bool changed = m_config_cache_update(p->opts_cache);
     changed = m_config_cache_update(p->next_opts_cache) || changed;
     if (changed) {
         update_render_options(p);
-        gpu_next_configure_queue(p, vo);
+        gpu_next_configure_queue(p, p->vo);
     }
 
     update_lut(p, &p->next_opts->lut);
@@ -1330,12 +1327,11 @@ struct frame_render_state {
 };
 
 // Set up render params and push incoming frames into the queue.
-static void queue_frames(struct vo *vo, struct vo_frame *frame,
+static void queue_frames(struct priv *p, struct vo_frame *frame,
                          struct frame_render_state *rs)
 {
-    struct priv *p = vo->priv;
     pl_options pars = p->pars;
-    update_options(vo);
+    update_options(p);
 
     rs->params = pars->params;
     const struct gl_video_opts *opts = p->opts_cache->opts;
@@ -1345,7 +1341,7 @@ static void queue_frames(struct vo *vo, struct vo_frame *frame,
                            !frame->still && frame->num_frames > 1 && !p->paused;
     rs->pts_offset = rs->can_interpolate ? frame->ideal_frame_vsync : 0;
     rs->params.info_callback = info_callback;
-    rs->params.info_priv = vo;
+    rs->params.info_priv = p;
     rs->params.skip_caching_single_frame = !cache_frame;
     rs->params.preserve_mixing_cache = p->next_opts->inter_preserve && !frame->still;
     if (frame->still || p->paused)
@@ -1373,7 +1369,7 @@ static void queue_frames(struct vo *vo, struct vo_frame *frame,
         if (pl_queue_peek(p->queue, 0, &vpts) &&
             frame->current->pts + MPMAX(0, rs->pts_offset) < vpts.pts)
         {
-            MP_VERBOSE(vo, "Forcing queue refill, PTS(%f + %f | %f) < VPTS(%f)\n",
+            MP_VERBOSE(p, "Forcing queue refill, PTS(%f + %f | %f) < VPTS(%f)\n",
                        frame->current->pts, rs->pts_offset,
                        frame->ideal_frame_vsync_duration, vpts.pts);
             p->want_reset = true;
@@ -1403,7 +1399,7 @@ static void queue_frames(struct vo *vo, struct vo_frame *frame,
         struct mp_image *mpi = mp_image_new_ref(frame->frames[n]);
         struct frame_priv *fp = talloc_zero(mpi, struct frame_priv);
         mpi->priv = fp;
-        fp->vo = vo;
+        fp->p = p;
 
         pl_queue_push(p->queue, &(struct pl_source_frame) {
             .pts = mpi->pts,
@@ -1422,10 +1418,9 @@ static void queue_frames(struct vo *vo, struct vo_frame *frame,
 // output surface. This does not touch the output itself: it records the wanted
 // hint in `rs->hint_action` for the caller to apply, because hinting is
 // swapchain business and is meaningless for a caller-supplied FBO.
-static void negotiate_target_csp(struct vo *vo, struct vo_frame *frame,
+static void negotiate_target_csp(struct priv *p, struct vo_frame *frame,
                                  struct frame_render_state *rs)
 {
-    struct priv *p = vo->priv;
     const struct gl_video_opts *opts = p->opts_cache->opts;
     rs->hint_action = HINT_NONE;
     rs->external_params = false;
@@ -1559,11 +1554,10 @@ static void negotiate_target_csp(struct vo *vo, struct vo_frame *frame,
 }
 
 // Render into an already-acquired target.
-static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
+static bool render_frame_to_target(struct priv *p, struct vo_frame *frame,
                                    struct pl_frame *target,
                                    struct frame_render_state *rs)
 {
-    struct priv *p = vo->priv;
     pl_options pars = p->pars;
     pl_gpu gpu = p->gpu;
     const struct gl_video_opts *opts = p->opts_cache->opts;
@@ -1624,7 +1618,7 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
 #endif
     }
     stats_time_start(p->stats, "osd-update");
-    update_overlays(vo, p->osd_res,
+    update_overlays(p, p->osd_res,
                     (frame->current && opts->blend_subs) ? OSD_DRAW_OSD_ONLY : 0,
                     PL_OVERLAY_COORDS_DST_FRAME, &p->osd_state, target, frame->current,
                     frame->current ? frame->current->params.stereo3d : 0, get_ref_luma(p));
@@ -1650,15 +1644,15 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
         struct pl_source_frame first;
         if (pl_queue_peek(p->queue, 0, &first) && qparams.pts < first.pts) {
             if (first.pts != frame->current->pts)
-                MP_VERBOSE(vo, "Current PTS(%f) != VPTS(%f)\n", frame->current->pts, first.pts);
-            MP_VERBOSE(vo, "Clamping first frame PTS from %f to %f\n", qparams.pts, first.pts);
+                MP_VERBOSE(p, "Current PTS(%f) != VPTS(%f)\n", frame->current->pts, first.pts);
+            MP_VERBOSE(p, "Clamping first frame PTS from %f to %f\n", qparams.pts, first.pts);
             qparams.pts = first.pts;
         }
         p->last_pts = qparams.pts;
 
         switch (pl_queue_update(p->queue, &mix, &qparams)) {
         case PL_QUEUE_ERR:
-            MP_ERR(vo, "Failed updating frames!\n");
+            MP_ERR(p, "Failed updating frames!\n");
             goto done;
         case PL_QUEUE_EOF:
             abort(); // we never signal EOF
@@ -1666,7 +1660,7 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
             // This is expected to happen semi-frequently near the start and
             // end of a file, so only log it at high verbosity and move on.
             if (!frame->still)
-                MP_DBG(vo, "Render queue underrun.\n");
+                MP_DBG(p, "Render queue underrun.\n");
             break;
         case PL_QUEUE_OK:
             break;
@@ -1680,7 +1674,7 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
             struct pl_frame *image = (struct pl_frame *) mix.frames[i];
             struct mp_image *mpi = image->user_data;
             struct frame_priv *fp = mpi->priv;
-            apply_crop(image, p->src, vo->params->w, vo->params->h);
+            apply_crop(image, p->src, p->vo->params->w, p->vo->params->h);
             if (opts->blend_subs) {
                 if (frame->redraw)
                     p->osd_sync++;
@@ -1693,15 +1687,15 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
                         .w = w,
                         .h = h,
                         .ml = -image->crop.x0 * rx,
-                        .mr = (image->crop.x1 - vo->params->w) * rx,
+                        .mr = (image->crop.x1 - p->vo->params->w) * rx,
                         .mt = -image->crop.y0 * ry,
-                        .mb = (image->crop.y1 - vo->params->h) * ry,
+                        .mb = (image->crop.y1 - p->vo->params->h) * ry,
                         .display_par = 1.0,
                     };
                     enum pl_overlay_coords rel = opts->blend_subs == BLEND_SUBS_VIDEO
                         ? PL_OVERLAY_COORDS_SRC_CROP : PL_OVERLAY_COORDS_DST_CROP;
                     stats_time_start(p->stats, "osd-blend-update");
-                    update_overlays(vo, res, OSD_DRAW_SUB_ONLY,
+                    update_overlays(p, res, OSD_DRAW_SUB_ONLY,
                                     rel, &fp->subs, image, mpi,
                                     mpi->params.stereo3d, get_ref_luma(p));
                     stats_time_end(p->stats, "osd-blend-update");
@@ -1733,14 +1727,14 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
     bool render_ok = pl_render_image_mix(p->rr, &mix, target, &rs->params);
     stats_time_end(p->stats, "render");
     if (!render_ok) {
-        MP_ERR(vo, "Failed rendering frame!\n");
+        MP_ERR(p, "Failed rendering frame!\n");
         goto done;
     }
 
     struct pl_frame ref_frame;
     pl_frames_infer_mix(p->rr, &mix, target, &ref_frame);
 
-    mp_mutex_lock(&vo->params_mutex);
+    mp_mutex_lock(&p->vo->params_mutex);
     p->target_params = (struct mp_image_params){
         .imgfmt_name = target->planes[0].texture->params.format
                         ? target->planes[0].texture->params.format->name : NULL,
@@ -1750,13 +1744,13 @@ static bool render_frame_to_target(struct vo *vo, struct vo_frame *frame,
         .repr = target->repr,
         .rotate = target->rotation,
     };
-    vo->target_params = &p->target_params;
+    p->vo->target_params = &p->target_params;
 
-    if (vo->params) {
+    if (p->vo->params) {
         // Augment metadata with peak detection max_pq_y / avg_pq_y
-        vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
+        p->vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &p->vo->params->color.hdr);
     }
-    mp_mutex_unlock(&vo->params_mutex);
+    mp_mutex_unlock(&p->vo->params_mutex);
 
     p->is_interpolated = rs->pts_offset != 0 && mix.num_frames > 1;
     valid = true;
@@ -1775,13 +1769,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     struct priv *p = vo->priv;
     struct frame_render_state rs = {0};
 
-    queue_frames(vo, frame, &rs);
+    queue_frames(p, frame, &rs);
 
     struct ra_swapchain *sw = p->ra_ctx->swapchain;
     // TODO: Implement this for all backends
     if (sw->fns->target_csp)
         rs.target_csp = sw->fns->target_csp(sw);
-    negotiate_target_csp(vo, frame, &rs);
+    negotiate_target_csp(p, frame, &rs);
 
     switch (rs.hint_action) {
     case HINT_SET:
@@ -1813,7 +1807,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // Calculate target
     struct pl_frame target;
     pl_frame_from_swapchain(&target, &swframe);
-    render_frame_to_target(vo, frame, &target, &rs);
+    render_frame_to_target(p, frame, &target, &rs);
 
     p->frame_pending = true;
     return VO_TRUE;
@@ -1848,9 +1842,9 @@ static int query_format(struct vo *vo, int format)
     if (ra_hwdec_get(&p->hwdec_ctx, format))
         return true;
 
-    bool supported = format_supported(vo, format, false);
+    bool supported = format_supported(p, format, false);
     if (!supported)
-        supported = format_supported(vo, format, true);
+        supported = format_supported(p, format, true);
 
     return supported;
 }
@@ -1938,7 +1932,7 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
     pl_tex fbo = NULL;
     args->res = NULL;
 
-    update_options(vo);
+    update_options(p);
     struct pl_render_params params = pars->params;
     params.info_callback = NULL;
     params.skip_caching_single_frame = true;
@@ -2099,12 +2093,12 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
         };
         enum pl_overlay_coords rel = opts->blend_subs == BLEND_SUBS_VIDEO
             ? PL_OVERLAY_COORDS_SRC_CROP : PL_OVERLAY_COORDS_DST_CROP;
-        update_overlays(vo, res, osd_flags,
+        update_overlays(p, res, osd_flags,
                         rel, &fp->subs, &image, mpi,
                         mpi->params.stereo3d, 0);
     } else {
         // Disable overlays when blend_subs is disabled
-        update_overlays(vo, osd, osd_flags, PL_OVERLAY_COORDS_DST_FRAME,
+        update_overlays(p, osd, osd_flags, PL_OVERLAY_COORDS_DST_FRAME,
                         &p->osd_state, &target, mpi,
                         mpi->params.stereo3d, 0);
         image.num_overlays = 0;
@@ -2223,7 +2217,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
         // Special case for --image-lut which requires a full reset.
         int old_type = p->next_opts->image_lut.type;
-        update_options(vo);
+        update_options(p);
         struct user_lut image_lut = p->next_opts->image_lut;
         p->want_reset |= image_lut.opt && ((!image_lut.path && image_lut.opt) ||
                          (image_lut.path && strcmp(image_lut.path, image_lut.opt)) ||
@@ -2547,6 +2541,7 @@ static void load_hwdec_api(void *ctx, struct hwdec_imgfmt_request *params)
 static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
+    p->vo = vo;
     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
     p->next_opts = p->next_opts_cache->opts;

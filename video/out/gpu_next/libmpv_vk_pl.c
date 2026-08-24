@@ -19,10 +19,17 @@
 
 #include "libmpv_gpu_next.h"
 #include "mpv/render_vk.h"
+#include "video/out/gpu/context.h"
+#include "video/out/placebo/ra_pl.h"
 #include "video/out/placebo/utils.h"
 
 struct priv {
     pl_vulkan vk;
+    // Bare ra_ctx wrapping the imported device, so hardware decoding interop
+    // can be set up like for any other Vulkan context. It has no swapchain and
+    // no window; interops that need more than an ra over the pl_gpu (i.e.
+    // hwdec_vulkan, which wants the mpvk_ctx) skip themselves gracefully.
+    struct ra_ctx *ra_ctx;
     pl_tex target;
     VkImage wrapped;        // which VkImage `target` wraps
     VkImageLayout layout;   // layout the client last told us about
@@ -72,10 +79,23 @@ static int init(struct libmpv_gpu_next_context *ctx, mpv_render_param *params)
     }
 
     ctx->gpu = p->vk->gpu;
-    // No ra_ctx: hardware decoding interop for Vulkan would need an ra wrapping
-    // the imported device, which does not exist yet. Decoding still works, it
-    // just does not stay on the GPU.
-    ctx->ra_ctx = NULL;
+
+    // An ra over the imported pl_gpu is all the hwdec machinery needs: every
+    // interop driver only dereferences ra_ctx->ra (hwdec_cuda's Vulkan path
+    // gets the pl_gpu back via ra_pl_get()). Without it we would still render
+    // fine, but only from software-decoded or copied-back frames.
+    p->ra_ctx = talloc_zero(p, struct ra_ctx);
+    p->ra_ctx->log = ctx->log;
+    p->ra_ctx->global = ctx->global;
+    p->ra_ctx->opts = (struct ra_ctx_opts){ .allow_sw = true };
+    p->ra_ctx->ra = ra_create_pl(p->vk->gpu, ctx->log);
+    if (p->ra_ctx->ra) {
+        ctx->ra_ctx = p->ra_ctx;
+    } else {
+        mp_warn(ctx->log, "Failed creating an RA over the imported device; "
+                          "hardware decoding will not be available.\n");
+        TA_FREEP(&p->ra_ctx);
+    }
     return 0;
 }
 
@@ -202,6 +222,10 @@ static void destroy(struct libmpv_gpu_next_context *ctx)
 
     if (p->target)
         pl_tex_destroy(ctx->gpu, &p->target);
+    if (p->ra_ctx && p->ra_ctx->ra) {
+        p->ra_ctx->ra->fns->destroy(p->ra_ctx->ra);
+        p->ra_ctx->ra = NULL;
+    }
     if (p->vk)
         pl_vulkan_destroy(&p->vk);
     if (ctx->pllog)

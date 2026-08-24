@@ -39,6 +39,10 @@ static VkDeviceMemory readback_mem;
 static VkCommandPool pool;
 static VkSemaphore done_sem;
 static const VkPhysicalDeviceFeatures2 *vk_features;
+// Device extensions actually enabled; mpv must be told about them, or it
+// (libplacebo) assumes they are unavailable.
+static const char *dev_exts[8];
+static uint32_t num_dev_exts;
 
 static uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want)
 {
@@ -122,8 +126,32 @@ static void vk_setup(void)
                       .shaderStorageImageReadWithoutFormat = VK_TRUE,
                       .shaderStorageImageWriteWithoutFormat = VK_TRUE },
     };
+    // Enable the external memory/semaphore export extensions when the driver
+    // has them: mpv's zero-copy CUDA (nvdec) interop shares decoded frames by
+    // exporting Vulkan memory and semaphores as FDs. Without these, playback
+    // still works but hardware decoding degrades to a copy path.
+    const char *want_exts[] = {
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+    };
+    uint32_t next = 0;
+    VKC(vkEnumerateDeviceExtensionProperties(phys, NULL, &next, NULL));
+    VkExtensionProperties *eprops = calloc(next, sizeof(*eprops));
+    VKC(vkEnumerateDeviceExtensionProperties(phys, NULL, &next, eprops));
+    for (size_t w = 0; w < sizeof(want_exts) / sizeof(want_exts[0]); w++) {
+        for (uint32_t i = 0; i < next; i++) {
+            if (strcmp(eprops[i].extensionName, want_exts[w]) == 0) {
+                dev_exts[num_dev_exts++] = want_exts[w];
+                break;
+            }
+        }
+    }
+    free(eprops);
+
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                                .pNext = &feats,
+                               .enabledExtensionCount = num_dev_exts,
+                               .ppEnabledExtensionNames = dev_exts,
                                .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci };
     VKC(vkCreateDevice(phys, &dci, NULL, &dev));
     vk_features = &feats;
@@ -241,6 +269,8 @@ int main(int argc, char **argv)
     mpv_vulkan_init_params vkp = {
         .instance = inst, .phys_device = phys, .device = dev,
         .get_proc_addr = vkGetInstanceProcAddr,
+        .extensions = dev_exts,
+        .num_extensions = (int) num_dev_exts,
         .queue_graphics = { qfam, 1 },
         .queue_compute  = { qfam, 1 },
         .queue_transfer = { qfam, 1 },

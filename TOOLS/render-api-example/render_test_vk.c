@@ -276,11 +276,14 @@ int main(int argc, char **argv)
         .queue_transfer = { qfam, 1 },
         .features = vk_features,
     };
+    int advanced = atoi(getenv("TEST_ADVANCED") ?: "0");
     mpv_render_param cp[] = {
         { MPV_RENDER_PARAM_API_TYPE, (void *) MPV_RENDER_API_TYPE_VULKAN },
         { MPV_RENDER_PARAM_VULKAN_INIT_PARAMS, &vkp },
+        { MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced },
         { 0 }
     };
+    printf("advanced_control=%d\n", advanced);
     mpv_render_context *rctx = NULL;
     int err = mpv_render_context_create(&rctx, mpv, cp);
     if (err < 0) {
@@ -296,6 +299,9 @@ int main(int argc, char **argv)
     unsigned char *px = malloc((size_t) W * H * 4);
     int rendered = 0, nonblack = 0;
     bool eof = false;
+    double render_ns_total = 0;
+    struct timespec t0, t1, wall0 = {0};
+    clock_gettime(CLOCK_MONOTONIC, &wall0);
 
     for (int i = 0; i < 3000 && rendered < want && !eof; i++) {
         while (1) {
@@ -321,7 +327,10 @@ int main(int argc, char **argv)
             { MPV_RENDER_PARAM_VULKAN_FBO, &fbo },
             { 0 }
         };
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         err = mpv_render_context_render(rctx, rp);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        render_ns_total += (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
         if (err < 0) { fprintf(stderr, "FATAL: render: %s\n", mpv_error_string(err)); return 1; }
         rendered++;
 
@@ -341,6 +350,11 @@ int main(int argc, char **argv)
         }
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double wall_s = (t1.tv_sec - wall0.tv_sec) + (t1.tv_nsec - wall0.tv_nsec) / 1e9;
+    printf("TIMING: mean render() %.2f ms, wall %.2f s for %d frames (%.1f fps)\n",
+           rendered ? render_ns_total / rendered / 1e6 : 0, wall_s, rendered,
+           wall_s > 0 ? rendered / wall_s : 0);
     printf("RESULT: rendered=%d nonblack=%d (wanted %d)\n", rendered, nonblack, want);
     mpv_render_context_free(rctx);
     mpv_terminate_destroy(mpv);

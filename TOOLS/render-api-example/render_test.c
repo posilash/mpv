@@ -116,7 +116,7 @@ int main(int argc, char **argv)
         die("mpv_initialize failed");
 
     mpv_opengl_init_params gl_init = { .get_proc_address = get_proc };
-    int advanced = 1;
+    int advanced = atoi(getenv("TEST_ADVANCED") ?: "1");
     mpv_render_param cparams[] = {
         { MPV_RENDER_PARAM_API_TYPE, (void *) api },
         { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init },
@@ -130,7 +130,8 @@ int main(int argc, char **argv)
                 api, mpv_error_string(err));
         return 1;
     }
-    printf("render context created with api-type=%s\n", api);
+    printf("render context created with api-type=%s advanced_control=%d\n",
+           api, advanced);
 
     const char *cmd[] = { "loadfile", file, NULL };
     mpv_command(mpv, cmd);
@@ -139,6 +140,9 @@ int main(int argc, char **argv)
     int rendered = 0, nonblack = 0;
     bool eof = false;
     unsigned char *px = malloc(W * H * 4);
+    double render_ns_total = 0;
+    struct timespec t0, t1, wall0;
+    clock_gettime(CLOCK_MONOTONIC, &wall0);
 
     for (int iter = 0; iter < 2000 && rendered < want_frames && !eof; iter++) {
         while (1) {
@@ -168,7 +172,10 @@ int main(int argc, char **argv)
             { MPV_RENDER_PARAM_FLIP_Y, &flip },
             { 0 }
         };
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         err = mpv_render_context_render(rctx, rparams);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        render_ns_total += (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
         if (err < 0) {
             fprintf(stderr, "FATAL: render: %s\n", mpv_error_string(err));
             return 1;
@@ -195,6 +202,11 @@ int main(int argc, char **argv)
         }
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double wall_s = (t1.tv_sec - wall0.tv_sec) + (t1.tv_nsec - wall0.tv_nsec) / 1e9;
+    printf("TIMING: mean render() %.2f ms, wall %.2f s for %d frames (%.1f fps)\n",
+           rendered ? render_ns_total / rendered / 1e6 : 0, wall_s, rendered,
+           wall_s > 0 ? rendered / wall_s : 0);
     printf("RESULT: rendered=%d nonblack=%d (wanted %d)\n",
            rendered, nonblack, want_frames);
 

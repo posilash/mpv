@@ -33,6 +33,12 @@ struct priv {
     pl_tex target;
     VkImage wrapped;        // which VkImage `target` wraps
     VkImageLayout layout;   // layout the client last told us about
+    // Whether external access to `target` is currently held (by us/the
+    // client) rather than owned by libplacebo. wrap_fbo() runs twice per
+    // frame -- once via get_target_size(), once via render() -- and the image
+    // must be released to libplacebo exactly once between finish_target()
+    // holds, or libplacebo complains about releasing an unheld image.
+    bool held;
 };
 
 static int init(struct libmpv_gpu_next_context *ctx, mpv_render_param *params)
@@ -145,18 +151,24 @@ static int wrap_fbo(struct libmpv_gpu_next_context *ctx,
         p->wrapped = fbo->image;
         // A freshly wrapped image is undefined as far as libplacebo knows.
         p->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Wrapped images start out owned by the client.
+        p->held = true;
     }
 
     // Hand the image over to libplacebo, telling it the layout the client left
     // it in. Without this it would assume the contents are undefined and
-    // discard whatever the client drew underneath.
-    pl_vulkan_release_ex(ctx->gpu, pl_vulkan_release_params(
-        .tex = p->target,
-        .layout = fbo->layout,
-        .qf = VK_QUEUE_FAMILY_IGNORED,
-        .semaphore = { fbo->wait_semaphore, fbo->wait_value },
-    ));
-    p->layout = fbo->layout;
+    // discard whatever the client drew underneath. Skipped when the image was
+    // already handed over this frame (see `held`).
+    if (p->held) {
+        pl_vulkan_release_ex(ctx->gpu, pl_vulkan_release_params(
+            .tex = p->target,
+            .layout = fbo->layout,
+            .qf = VK_QUEUE_FAMILY_IGNORED,
+            .semaphore = { fbo->wait_semaphore, fbo->wait_value },
+        ));
+        p->held = false;
+        p->layout = fbo->layout;
+    }
 
     int depth = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_DEPTH,
                                              &(int){0});
@@ -197,13 +209,14 @@ static void finish_target(struct libmpv_gpu_next_context *ctx,
     VkImageLayout want = fbo->out_layout;
     VkImageLayout got = want;
 
-    pl_vulkan_hold_ex(ctx->gpu, pl_vulkan_hold_params(
+    bool ok = pl_vulkan_hold_ex(ctx->gpu, pl_vulkan_hold_params(
         .tex = p->target,
         .layout = want,
         .out_layout = want == VK_IMAGE_LAYOUT_UNDEFINED ? &got : NULL,
         .qf = VK_QUEUE_FAMILY_IGNORED,
         .semaphore = { fbo->signal_semaphore, fbo->signal_value },
     ));
+    p->held = ok;
 
     p->layout = got;
     fbo->out_layout = got;
@@ -211,7 +224,11 @@ static void finish_target(struct libmpv_gpu_next_context *ctx,
 
 static void done_frame(struct libmpv_gpu_next_context *ctx, bool display_synced)
 {
-    pl_gpu_finish(ctx->gpu);
+    // Submit, but do not wait: the client synchronizes via the FBO's signal
+    // semaphore, so a device-wide finish here would only serialize the CPU
+    // against the GPU once per frame. Matches the GL backend's glFlush-level
+    // behavior.
+    pl_gpu_flush(ctx->gpu);
 }
 
 static void destroy(struct libmpv_gpu_next_context *ctx)

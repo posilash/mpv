@@ -415,7 +415,15 @@ int mpv_render_context_render(mpv_render_context *ctx, mpv_render_param *params)
     if (frame != &dummy)
         talloc_free(frame);
 
-    if (GET_MPV_RENDER_PARAM(params, MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+    // Only pace the caller when it opted into driving mpv's timing
+    // (MPV_RENDER_PARAM_ADVANCED_CONTROL). Without it, render() just draws
+    // the current frame and returns: the VO thread free-runs its own frame
+    // timing (vo.c waits until target time before flip_page()), and blocking
+    // the client here until that point would make every render call last a
+    // full frame interval for no benefit -- simple clients sample frames via
+    // the update callback and present on their own schedule.
+    if (ctx->advanced_control &&
+        GET_MPV_RENDER_PARAM(params, MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
                              int, 1))
     {
         mp_mutex_lock(&ctx->lock);

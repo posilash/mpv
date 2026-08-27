@@ -178,11 +178,11 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
     if (err < 0)
         return err;
 
-    // The client owns the target surface and tells us nothing about its colour
-    // space, so leave it unknown. The renderer then applies the same fallback
-    // vo_gpu_next uses for backends without target_csp() support.
+    // What the client said its target is; wrap_fbo() just set it. Zeroed
+    // means it did not say, and the renderer falls back as vo_gpu_next does
+    // for backends without target_csp().
     gpu_next_renderer_render(p->renderer, frame, &target,
-                             (struct pl_color_space){0});
+                             p->context->target_csp);
 
     if (p->context->fns->finish_target)
         p->context->fns->finish_target(p->context, params);

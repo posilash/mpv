@@ -144,6 +144,22 @@ typedef struct mpv_vulkan_fbo {
      */
     VkSemaphore wait_semaphore;
     uint64_t wait_value;
+    /**
+     * Colour space of `image`. Zeroed means unknown and mpv treats the target
+     * as sRGB, as it did before these existed.
+     *
+     * --target-colorspace-hint reconfigures a swapchain mpv owns, and through
+     * this API it owns none, so without these HDR is tone-mapped to sRGB
+     * whatever the source. mpv reports what it settled on through
+     * `video-target-params`.
+     *
+     * Same values as --target-prim and --target-trc. Luminance in cd/m^2,
+     * 0 = unknown.
+     */
+    int primaries;
+    int transfer;
+    float min_luma;
+    float max_luma;
 } mpv_vulkan_fbo;
 
 #ifdef __cplusplus

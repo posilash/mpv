@@ -40,6 +40,10 @@ struct libmpv_gpu_next_context {
     // against it; when NULL, decoding falls back to software.
     struct ra_ctx *ra_ctx;
 
+    // Colour space of the client's target, set by wrap_fbo(). Zeroed means
+    // it did not say.
+    struct pl_color_space target_csp;
+
     void *priv;
 };
 

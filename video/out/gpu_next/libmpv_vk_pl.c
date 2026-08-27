@@ -175,6 +175,20 @@ static int wrap_fbo(struct libmpv_gpu_next_context *ctx,
     bool flip = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_FLIP_Y,
                                              &(int){0});
 
+    // What the client says its target is; zeroed means it did not say, and
+    // then this is sRGB as before.
+    ctx->target_csp = (struct pl_color_space){0};
+    if (fbo->primaries || fbo->transfer) {
+        ctx->target_csp = (struct pl_color_space){
+            .primaries = fbo->primaries,
+            .transfer  = fbo->transfer,
+            .hdr = {
+                .min_luma = fbo->min_luma,
+                .max_luma = fbo->max_luma,
+            },
+        };
+    }
+
     struct pl_swapchain_frame swframe = {
         .fbo = p->target,
         .flipped = flip,
@@ -185,7 +199,8 @@ static int wrap_fbo(struct libmpv_gpu_next_context *ctx,
             .bits.sample_depth = depth,
             .bits.color_depth = depth,
         },
-        .color_space = pl_color_space_srgb,
+        .color_space = ctx->target_csp.transfer ? ctx->target_csp
+                                                : pl_color_space_srgb,
     };
     pl_frame_from_swapchain(out, &swframe);
     return 0;

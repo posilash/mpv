@@ -2,6 +2,27 @@
 
 # mpv
 
+A fork of mpv. It exists to make libmpv's render API usable from a Vulkan
+application.
+
+Upstream's render API is OpenGL-only and draws through the old `gl_video`
+renderer, so an application embedding libmpv gets none of libplacebo's output:
+no HDR passthrough, no tone mapping controls, none of the better scalers.
+
+This fork adds:
+
+* A render API backend built on gpu-next, sharing the renderer with
+  `vo_gpu_next`. GL clients get it automatically; the old backend stays as a
+  fallback.
+* `render_vk.h`, a Vulkan entry point beside `render_gl.h`. The application
+  creates the `VkDevice`; libmpv imports it and renders into a `VkImage` the
+  application owns.
+* Hardware decoding over that imported device.
+* A way for the application to declare its render target's colour space, so an
+  HDR video reaches an HDR swapchain without being tone mapped to SDR.
+
+Built for the Nuvio desktop client's Wayland host. `master` carries all of it.
+
 
 * [External links](#external-links)
 * [Overview](#overview)

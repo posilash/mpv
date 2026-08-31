@@ -1763,7 +1763,7 @@ static bool render_frame_to_target(struct priv *p, struct vo_frame *frame,
         p->vo->target_params = &p->target_params;
 
         if (p->vo->params) {
-            // Augment metadata with peak detection max_pq_y / avg_pq_y
+            // Augment metadata with the peak detection results
             p->vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &p->vo->params->color.hdr);
         }
         mp_mutex_unlock(&p->vo->params_mutex);

@@ -154,6 +154,7 @@ struct priv {
     double last_pts;
     bool is_interpolated;
     bool want_reset;
+    bool want_seek_reset;
     bool flush_cache;
     bool frame_pending;
     bool paused;
@@ -1412,6 +1413,13 @@ static void queue_frames(struct priv *p, struct vo_frame *frame,
         rs->params.distort_params = NULL;
     }
 
+    // Frames up to last_id were pushed before the seek. Redraws of them keep
+    // the queue as it is, the reset happens with the first new frame.
+    if (p->want_seek_reset && frame->num_frames && frame->frame_id > p->last_id) {
+        p->want_seek_reset = false;
+        p->want_reset = true;
+    }
+
     // pl_queue advances its internal virtual PTS and culls available frames
     // based on this value and the VPS/FPS ratio. Requesting a non-monotonic PTS
     // is an invalid use of pl_queue. Reset it if this happens in an attempt to
@@ -1422,7 +1430,7 @@ static void queue_frames(struct priv *p, struct vo_frame *frame,
     // already requested. Clamp the check to 0, as we don't have the previous
     // frame in vo_frame anyway.
     struct pl_source_frame vpts;
-    if (frame->current && !p->want_reset) {
+    if (frame->current && !p->want_reset && !p->want_seek_reset) {
         if (pl_queue_peek(p->queue, 0, &vpts) &&
             frame->current->pts + MPMAX(0, rs->pts_offset) < vpts.pts)
         {
@@ -2286,7 +2294,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     case VOCTRL_RESET:
         // Defer until the first new frame (unique ID) actually arrives
-        p->want_reset = true;
+        p->want_seek_reset = true;
         return VO_TRUE;
 
     case VOCTRL_PERFORMANCE_DATA: {
@@ -2687,8 +2695,8 @@ void gpu_next_renderer_resize(struct priv *p, struct mp_rect *src,
 
 void gpu_next_renderer_reset(struct priv *p)
 {
-    // Defer until the first new frame (unique ID) actually arrives
-    p->want_reset = true;
+    // Mirrors VOCTRL_RESET: defer until the first new frame (unique ID) arrives
+    p->want_seek_reset = true;
 }
 
 struct mp_image *gpu_next_renderer_get_image(struct priv *p, int imgfmt, int w,

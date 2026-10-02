@@ -37,6 +37,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/replaygain.h>
+#include <libavutil/stereo3d.h>
 
 #include "audio/chmap_avchannel.h"
 
@@ -58,6 +59,7 @@
 #include "options/m_option.h"
 #include "options/options.h"
 #include "options/path.h"
+#include "video/csputils.h"
 
 #define INITIAL_PROBE_SIZE STREAM_BUFFER_SIZE
 #define PROBE_BUF_SIZE (10 * 1024 * 1024)
@@ -145,7 +147,7 @@ struct format_hack {
     unsigned int if_flags;      // additional AVInputFormat.flags flags
     bool max_probe : 1;         // use probescore only if max. probe size reached
     bool ignore : 1;            // blacklisted
-    bool no_stream : 1;         // do not wrap struct stream as AVIOContext
+    bool nested_network : 1;    // opens nested network URLs, needs the options
     bool use_stream_ids : 1;    // has a meaningful native stream IDs (export it)
     bool fully_read : 1;        // set demuxer.fully_read flag
     bool detect_charset : 1;    // format is a small text file, possibly not UTF8
@@ -175,8 +177,8 @@ static const struct format_hack format_hacks[] = {
     {"mp3", "audio/mpeg", 24, 0.5},
     {"mp3", NULL,         24, .max_probe = true},
 
-    {"hls", .no_stream = true, .clear_filepos = true, .no_ext_picky = true},
-    {"dash", .no_stream = true, .clear_filepos = true},
+    {"hls", .nested_network = true, .clear_filepos = true, .no_ext_picky = true},
+    {"dash", .nested_network = true, .clear_filepos = true},
     {"sdp", .clear_filepos = true, .is_network = true, .no_seek = true},
     {"mpeg", .use_stream_ids = true},
     {"mpegts", .use_stream_ids = true},
@@ -783,6 +785,9 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
                 sh->codec->rotate = (((int)(-r) % 360) + 360) % 360;
         }
 
+        if ((sd = mp_av_stream_get_side_data(st, AV_PKT_DATA_STEREO3D)))
+            sh->codec->stereo_mode = mp_stereo3d_from_av((const AVStereo3D *)sd);
+
         if ((sd = mp_av_stream_get_side_data(st, AV_PKT_DATA_DOVI_CONF))) {
             const AVDOVIDecoderConfigurationRecord *cfg = (void *) sd;
             MP_VERBOSE(demuxer, "Found Dolby Vision config record: profile "
@@ -1090,6 +1095,7 @@ static void build_editions(demuxer_t *demuxer)
             if (name_idx >= 0)
                 prefix = mp_tags_get_str(priv->streams[name_idx]->sh->tags, "comment");
         }
+        char buf[42];
         if (!prefix) {
             char *vb = mp_tags_get_str(ed.metadata, "variant_bitrate");
             char *end;
@@ -1097,8 +1103,8 @@ static void build_editions(demuxer_t *demuxer)
             if (rate > 0 && *end == '\0') {
                 rate /= 1000.0;
                 prefix = rate < 1000
-                    ? mp_tprintf(42, "Bitrate: %.f kbps", rate)
-                    : mp_tprintf(42, "Bitrate: %.3f Mbps", rate / 1000.0);
+                    ? mp_tprintf_buf(buf, sizeof(buf), "Bitrate: %.f kbps", rate)
+                    : mp_tprintf_buf(buf, sizeof(buf), "Bitrate: %.3f Mbps", rate / 1000.0);
             }
         }
 
@@ -1444,12 +1450,14 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
             MP_VERBOSE(demuxer, "Option extension_picky=0 was set due to known FFmpeg bugs\n");
     }
 
-    if ((priv->avif_flags & AVFMT_NOFILE) || priv->format_hack.no_stream) {
+    if ((priv->avif_flags & AVFMT_NOFILE) || priv->format_hack.nested_network) {
         mp_setup_av_network_options(&dopts, priv->avif->name,
                                     demuxer->global, demuxer->log);
         // This might be incorrect.
         demuxer->seekable = true;
-    } else {
+    }
+
+    if (!(priv->avif_flags & AVFMT_NOFILE)) {
         void *buffer = av_malloc(lavfdopts->buffersize);
         if (!buffer)
             goto fail;
@@ -1551,7 +1559,20 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     if (demuxer->params && demuxer->params->skip_lavf_probing)
         probeinfo = false;
     if (probeinfo) {
-        if (avformat_find_stream_info(avfc, NULL) < 0) {
+        int nb_streams = avfc->nb_streams;
+        AVDictionary **opts = talloc_zero_array(NULL, AVDictionary *, nb_streams);
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(61, 7, 100)
+        for (int i = 0; i < nb_streams; i++) {
+            AVCodecParameters *par = avfc->streams[i]->codecpar;
+            if (par->codec_type == AVMEDIA_TYPE_AUDIO && par->format == AV_SAMPLE_FMT_DSD)
+                av_dict_set(&opts[i], "request_sample_fmt", "dsd", 0);
+        }
+#endif
+        int r = avformat_find_stream_info(avfc, opts);
+        for (int i = 0; i < nb_streams; i++)
+            av_dict_free(&opts[i]);
+        talloc_free(opts);
+        if (r < 0) {
             MP_ERR(demuxer, "av_find_stream_info() failed\n");
             goto fail;
         }

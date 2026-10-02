@@ -2699,6 +2699,14 @@ void gpu_next_renderer_reset(struct priv *p)
     p->want_seek_reset = true;
 }
 
+void gpu_next_renderer_drop_queue(struct priv *p)
+{
+    // A new VO counts frame IDs from zero, so waiting for one above last_id
+    // would leave the old file's frame on screen for good.
+    p->want_seek_reset = false;
+    p->want_reset = true;
+}
+
 struct mp_image *gpu_next_renderer_get_image(struct priv *p, int imgfmt, int w,
                                              int h, int stride_align, int flags)
 {

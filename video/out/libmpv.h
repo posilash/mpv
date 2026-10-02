@@ -52,6 +52,9 @@ struct render_backend_fns {
     void (*reconfig)(struct render_backend *ctx, struct mp_image_params *params);
     // Like VOCTRL_RESET.
     void (*reset)(struct render_backend *ctx);
+    // The VO was destroyed. Frame IDs are per VO, so anything keyed on them is
+    // stale once its successor starts counting again. Optional.
+    void (*vo_detached)(struct render_backend *ctx);
     void (*screenshot)(struct render_backend *ctx, struct vo_frame *frame,
                        struct voctrl_screenshot *args);
     void (*perfdata)(struct render_backend *ctx,

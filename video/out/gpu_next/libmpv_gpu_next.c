@@ -134,6 +134,12 @@ static void reset(struct render_backend *ctx)
     gpu_next_renderer_reset(p->renderer);
 }
 
+static void vo_detached(struct render_backend *ctx)
+{
+    struct backend_priv *p = ctx->priv;
+    gpu_next_renderer_drop_queue(p->renderer);
+}
+
 static void update_external(struct render_backend *ctx, struct vo *vo)
 {
     struct backend_priv *p = ctx->priv;
@@ -210,6 +216,7 @@ const struct render_backend_fns render_backend_gpu_next = {
     .check_format = check_format,
     .reconfig = reconfig,
     .reset = reset,
+    .vo_detached = vo_detached,
     .update_external = update_external,
     .resize = resize,
     .get_target_size = get_target_size,

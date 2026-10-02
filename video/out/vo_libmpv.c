@@ -98,6 +98,7 @@ struct mpv_render_context {
     bool need_reconfig;
     bool need_resize;
     bool need_reset;
+    bool vo_detached;
     bool need_update_external;
     struct vo *vo;
 
@@ -383,6 +384,10 @@ int mpv_render_context_render(mpv_render_context *ctx, mpv_render_param *params)
             ctx->cur_frame->still = true;
     }
     ctx->need_reset = false;
+
+    if (ctx->vo_detached && ctx->renderer->fns->vo_detached)
+        ctx->renderer->fns->vo_detached(ctx->renderer);
+    ctx->vo_detached = false;
 
     struct vo_frame *frame = ctx->next_frame;
     int64_t wait_present_count = ctx->present_count;
@@ -706,6 +711,7 @@ static void uninit(struct vo *vo)
     ctx->need_resize = true;
     ctx->need_update_external = true;
     ctx->need_reset = true;
+    ctx->vo_detached = true;
     ctx->vo = NULL;
 
     // The following do not normally need ctx->lock, however, ctx itself may

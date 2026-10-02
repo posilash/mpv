@@ -73,6 +73,9 @@ void gpu_next_renderer_config(struct priv *p, struct mp_image_params *params);
 void gpu_next_renderer_resize(struct priv *p, struct mp_rect *src,
                               struct mp_rect *dst, struct mp_osd_res *osd);
 void gpu_next_renderer_reset(struct priv *p);
+// Drop the queue now rather than at the next new frame; for when the frame IDs
+// it would wait on started over.
+void gpu_next_renderer_drop_queue(struct priv *p);
 struct mp_image *gpu_next_renderer_get_image(struct priv *p, int imgfmt, int w,
                                              int h, int stride_align, int flags);
 void gpu_next_renderer_perfdata(struct priv *p,
